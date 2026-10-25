@@ -128,7 +128,30 @@ function bgsi_unload()
 			if statsGui then
 				statsGui:Destroy()
 			end
+
+			local playerBlackScreen = previousGui:FindFirstChild("BGSI_BlackScreen")
+
+			if playerBlackScreen then
+				playerBlackScreen:Destroy()
+			end
 		end
+
+		local lighting = game:GetService("Lighting")
+		local backup = genv2.BGSI_LightingBackup
+
+		if type(backup) == "table" then
+			for k, value in pairs(backup) do
+				pcall(function()
+					lighting[k] = value
+				end)
+			end
+
+			genv2.BGSI_LightingBackup = nil
+		end
+
+		pcall(function()
+			game:GetService("RunService"):Set3dRenderingEnabled(true)
+		end)
 
 		local blackScreen = game:GetService("CoreGui"):FindFirstChild("BGSI_BlackScreen")
 
@@ -630,7 +653,20 @@ do
 				Height = 300
 			},
 			trackedAccounts = {}
-		}
+		},
+		-- Legacy/compatibility keys that feature code reads directly. They must
+		-- live in t2 or v78() never loads them back from disk.
+		autoBubbleChallenge = false,
+		autoPetMatch = false,
+		autoSailorBounty = false,
+		farmGemsMax = 1000000000,
+		pickupRangeHookEnabled = false,
+		potionAmount = 1,
+		rebirthMachineName = "RebirthMachine",
+		seasonRewardsOnlyPets = false,
+		seasonRewardsPreviewCount = 6,
+		seasonRewardsScope = "Both",
+		trickOrTreatDelay = 1.5,
 	}
 
 	local data = HttpService:JSONDecode(HttpService:JSONEncode(t2))
@@ -699,6 +735,10 @@ do
 	end
 
 	v17 = function()
+		if not bgsiInstanceActive() then
+			return
+		end
+
 		local pausedAutomations = type(_G) == "table" and (_G.BGSI_SeasonPassHasActiveTasks == true or _G.BGSI_GemGenieHasActiveTasks == true or _G.BlockAutoHatchIncentive == true)
 
 		local ok, result2 = pcall(function()
@@ -908,17 +948,26 @@ do
 		end)
 
 		pcall(function()
-			local existing = CoreGui:FindFirstChild("BGSI_BlackScreen")
+			local playerGui = LocalPlayer and LocalPlayer:FindFirstChild("PlayerGui")
+			local legacy = CoreGui:FindFirstChild("BGSI_BlackScreen")
+
+			if legacy then
+				legacy:Destroy()
+			end
+
+			local existing = playerGui and playerGui:FindFirstChild("BGSI_BlackScreen")
 
 			if v14.disableRendering == true then
-				if not existing then
+				if not existing and playerGui then
 					local gui = Instance.new("ScreenGui")
 
 					gui.Name = "BGSI_BlackScreen"
 					gui.IgnoreGuiInset = true
 					gui.ResetOnSpawn = false
 					gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-					gui.DisplayOrder = 2147483647
+					-- PlayerGui layer, below every game ScreenGui so the in-game
+					-- HUD stays visible. CoreGui would always draw over it.
+					gui.DisplayOrder = -100000
 
 					local frame = Instance.new("Frame")
 
@@ -926,9 +975,23 @@ do
 					frame.Position = UDim2.fromScale(0, 0)
 					frame.BackgroundColor3 = Color3.new(0, 0, 0)
 					frame.BorderSizePixel = 0
+					frame.Active = false
+					frame.ZIndex = 0
 					frame.Parent = gui
 
-					gui.Parent = CoreGui
+					gui.Parent = playerGui
+				end
+
+				local hubUI = rawget(getgenv(), "BGSI_HubUI")
+
+				if typeof(hubUI) == "Instance" then
+					local screen = hubUI:IsA("ScreenGui") and hubUI or hubUI:FindFirstAncestorOfClass("ScreenGui")
+
+					if screen then
+						pcall(function()
+							screen.DisplayOrder = 2147483647
+						end)
+					end
 				end
 			elseif existing then
 				existing:Destroy()
@@ -6103,16 +6166,6 @@ do
 			end
 		end
 
-		if not MaxHatch then
-			local ok2, result3 = pcall(function()
-				return RemoteFunction2:InvokeServer("GetMaxHatch") or RemoteFunction2:InvokeServer("GetHatchLimit")
-			end)
-
-			if ok2 and result3 and type(result3) == "number" then
-				MaxHatch = result3
-			end
-		end
-
 		if MaxHatch and type(MaxHatch) == "number" and MaxHatch > 0 then
 			u782 = MaxHatch
 			n11 = tick()
@@ -7011,12 +7064,28 @@ do
 								level = tonumber(levels[#levels]) or 1
 							end
 
-							pcall(function()
-								RemoteEvent:FireServer("UsePotion", potionName, level, v14.potionUseAmount or 10)
-							end)
+							local data = LocalData and LocalData:Get()
+							local owned = 0
+
+							if data and type(data.Potions) == "table" then
+								for _, row in pairs(data.Potions) do
+									if type(row) == "table" and row.Name == potionName and tonumber(row.Level) == level then
+										owned = tonumber(row.Amount) or 0
+										break
+									end
+								end
+							end
+
+							if owned > 0 then
+								local amount = math.max(1, math.min(owned, tonumber(v14.potionUseAmount) or 10))
+
+								pcall(function()
+									RemoteEvent:FireServer("UsePotion", potionName, level, amount)
+								end)
+							end
 						end
 
-						task.wait(0.1)
+						task.wait(1)
 					end
 				end)
 			end
@@ -9021,7 +9090,9 @@ do
 		bgsi_waitForStableCoins(p226, COIN_TASK_WAIT_COINS_TIMEOUT)
 		type(fullLogSource)
 		task.wait(COIN_TASK_AFTER_COLLECT_DETECT_WAIT)
-		teleportToSpawnForCollect(v1215.currencyKey)
+		if v1215.skipTeleport ~= true then
+			teleportToSpawnForCollect(v1215.currencyKey)
+		end
 		type(fullLogSource)
 		task.wait(0.15)
 
@@ -9033,7 +9104,9 @@ do
 
 			if v1220 < v1219 then
 				bgsi_burnGemsViaShop(p225, p226, v1220, 60)
-				teleportToSpawnForCollect(currencyKey)
+				if v1215.skipTeleport ~= true then
+					teleportToSpawnForCollect(currencyKey)
+				end
 				task.wait(0.15)
 			end
 		else
@@ -9048,7 +9121,9 @@ do
 			if type(v1223) == "number" then
 				if v1223 == v1223 and COLLECT_COIN_OVERFLOW_THRESHOLD <= v1223 then
 					bgsi_hatchRainbowEggForSeconds(p225, COIN_TASK_RAINBOW_HATCH_SEC)
-					teleportToSpawnForCollect(currencyKey)
+					if v1215.skipTeleport ~= true then
+						teleportToSpawnForCollect(currencyKey)
+					end
 					task.wait(0.15)
 				end
 			end
@@ -9072,7 +9147,7 @@ do
 				bgsi_runWheelSpinCollectFallbackLoop(fullLogSource, COIN_TASK_WHEEL_LOOP_SEC, COIN_TASK_WHEEL_SPIN_INTERVAL)
 			end
 
-			if not teleportToSpawnForCollect(v1215.currencyKey) then
+			if v1215.skipTeleport ~= true and not teleportToSpawnForCollect(v1215.currencyKey) then
 				pcall(function()
 					local Character = LocalPlayer.Character
 					local HumanoidRootPart = Character and Character:FindFirstChild("HumanoidRootPart")
@@ -9251,7 +9326,8 @@ do
 									end, {
 										fullLogSource = "GG:Collect",
 										currencyKey = v1245,
-										requiredAmount = n20
+										requiredAmount = n20,
+										skipTeleport = true
 									})
 								end
 
@@ -12612,13 +12688,6 @@ do
 						task.wait(0.85)
 
 						continue
-					end
-
-					if tick() - n32 >= 1 then
-						n32 = tick()
-						pcall(function()
-							RemoteEvent:FireServer("ChallengePassReset")
-						end)
 					end
 
 					if tick() - n31 >= 10 then
@@ -16013,7 +16082,6 @@ do
 					n58 = now3
 					pcall(function()
 						RemoteEvent2:FireServer("UnlockWorld", "Minigame Paradise")
-						RemoteEvent2:FireServer("UnlockArea", "Minigame Paradise")
 					end)
 
 					continue
@@ -17582,7 +17650,6 @@ do
 							"Minigame Paradise"
 						}))
 						RemoteEvent2:FireServer("UnlockWorld", "Minigame Paradise")
-						RemoteEvent2:FireServer("UnlockArea", "Minigame Paradise")
 					end)
 				end
 
@@ -18218,7 +18285,7 @@ do
 				if RemoteEvent2 and now4 - n66 >= 3 then
 					n66 = now4
 					pcall(function()
-						RemoteEvent2:FireServer("EquipBestPets")
+						RemoteEvent2:FireServer("EquipBestPets", "Power")
 					end)
 				end
 
@@ -18705,7 +18772,6 @@ do
 										"Minigame Paradise"
 									}))
 									RemoteEvent3:FireServer("UnlockWorld", "Minigame Paradise")
-									RemoteEvent3:FireServer("UnlockArea", "Minigame Paradise")
 								end)
 							end
 						end
@@ -18753,7 +18819,6 @@ do
 								"Minigame Paradise"
 							}))
 							RemoteEvent3:FireServer("UnlockWorld", "Minigame Paradise")
-							RemoteEvent3:FireServer("UnlockArea", "Minigame Paradise")
 						end)
 
 						if now5 - n62 >= 5 then
@@ -19314,8 +19379,10 @@ do
 
 						local egg = eggsData and eggsData[eggName]
 
-						-- already claimed, never opened, or no index data?
-						if egg and not eggClaimed[eggName] and eggsOpened[eggName] ~= nil and indexUtil then
+						-- The game only exposes an egg claim when the egg has a
+						-- world and a reward; eggs without either have no claim
+						-- handler server-side, so firing for them is wasted.
+						if egg and egg.World and egg.Reward and not eggClaimed[eggName] and eggsOpened[eggName] ~= nil and indexUtil then
 							local ok, completed = pcall(function()
 								return indexUtil:GetEggCompleted(data, egg.World, "Normal", eggName)
 							end)
@@ -19390,7 +19457,10 @@ do
 		})
 		task.spawn(function()
 			while bgsiInstanceActive() do
-				if v14.autoFreeSpin then
+				local data = LocalData and LocalData:Get()
+				local nowTime = Time.now()
+
+				if v14.autoFreeSpin and (not data or nowTime >= (tonumber(data.NextWheelSpin) or 0)) then
 					if _G.BGSI_Status then
 						_G.BGSI_Status("Claiming free spin")
 					end
@@ -19400,7 +19470,7 @@ do
 					end)
 				end
 
-				if v14.autoShadowFreeSpin then
+				if v14.autoShadowFreeSpin and (not data or nowTime >= (tonumber(data.ShadowNextWheelSpin) or 0)) then
 					if _G.BGSI_Status then
 						_G.BGSI_Status("Claiming shadow free spin")
 					end
@@ -20559,6 +20629,16 @@ do
 			local lastPurchaseAt = 0
 			local lastShopResyncAt = 0
 
+			if type(_G) == "table" then
+				if type(_G.BGSI_ShopDebug) ~= "table" then
+					_G.BGSI_ShopDebug = { history = {} }
+				end
+
+				_G.BGSI_ShopDebug.loopStartedAt = tick()
+				_G.BGSI_ShopDebug.enabledAtStart = v14.autoBuyShops
+				_G.BGSI_ShopDebug.intervalAtStart = v14.shopInterval
+			end
+
 			-- Shop item labels can carry a level suffix ("Coins IV"), while the
 			-- dropdown stores the base name ("Coins"). Normalise both sides.
 			local function normalizeShopItemName(pName)
@@ -20622,6 +20702,12 @@ do
 						pcall(function()
 							RemoteEvent:FireServer("RequestDataResync", "Shops")
 						end)
+
+						if type(_G) == "table" and type(_G.BGSI_ShopDebug) == "table" then
+							_G.BGSI_ShopDebug.lastResyncAt = tick()
+							_G.BGSI_ShopDebug.resyncCount = (tonumber(_G.BGSI_ShopDebug.resyncCount) or 0) + 1
+						end
+
 						task.wait(0.3)
 					end
 
@@ -20934,7 +21020,18 @@ do
 			local savedBlock
 			local lastHookAt = 0
 			local farming = false
+			local leftMine = false
+			local leaveAttempts = 0
+			local lastLeaveAt = 0
+			local lastGemsSeen = nil
+			local lastGainAt = 0
 			local mineCenter = Vector3.new(2280, 3156, 845)
+
+			if type(_G) == "table" then
+				_G.BGSI_GemFarmDebug = _G.BGSI_GemFarmDebug or {}
+				_G.BGSI_GemFarmDebug.loopStartedAt = tick()
+				_G.BGSI_GemFarmDebug.enabledAtStart = v14.autoFarmGems
+			end
 
 			local function report(msg)
 				if _G.BGSI_Status then
@@ -20965,6 +21062,10 @@ do
 						RemoteEvent:FireServer("Teleport", "Workspace.Worlds.The Overworld.FastTravel.Spawn")
 					end)
 				end
+			end
+
+			if v14.autoFarmGems == true then
+				getgenv().BGSI_FarmGemsKick = true
 			end
 
 			while bgsiInstanceActive() do
@@ -21003,12 +21104,55 @@ do
 
 					if not farming and (gems < under or kick and gems < maxAmount) then
 						farming = true
+						leftMine = false
+						lastGemsSeen = gems
+						lastGainAt = tick()
 						report(("Gem farm: %d < %d, starting"):format(gems, under))
 					elseif farming and gems >= maxAmount then
 						farming = false
+						lastGemsSeen = nil
 						report(("Gem farm: reached %d gems"):format(gems))
 						endFarm()
 						leaveShadowRealm()
+						leftMine = true
+						leaveAttempts = 1
+						lastLeaveAt = tick()
+					end
+
+					-- Target already met on load (or reached before a reload): the
+					-- loop never started farming, so nothing walked the character
+					-- home. Try the exit a few times in case the teleport drops.
+					local character0 = LocalPlayer and LocalPlayer.Character
+					local hrp0 = character0 and character0:FindFirstChild("HumanoidRootPart")
+
+					if not farming and hrp0 and gems >= maxAmount and (hrp0.Position - mineCenter).Magnitude < 800 then
+						if leaveAttempts < 3 and tick() - lastLeaveAt >= 10 then
+							leaveAttempts += 1
+							lastLeaveAt = tick()
+							report("Gem farm: target already reached — leaving the mine")
+							leaveShadowRealm()
+						end
+					elseif farming then
+						leaveAttempts = 0
+						lastLeaveAt = 0
+					end
+
+					-- The mine's zone can go inactive (server-side); sitting on an
+					-- empty mine forever is worse than stopping.
+					if farming then
+						if lastGemsSeen == nil then
+							lastGemsSeen = gems
+							lastGainAt = tick()
+						elseif gems > lastGemsSeen then
+							lastGemsSeen = gems
+							lastGainAt = tick()
+						elseif tick() - lastGainAt >= 180 then
+							farming = false
+							lastGemsSeen = nil
+							report("Gem farm: no gems gained in 3 min — mine inactive, stopped")
+							endFarm()
+							leaveShadowRealm()
+						end
 					end
 
 					if farming then
@@ -21084,10 +21228,11 @@ do
 							end
 						end
 					end
-				elseif farming or savedCollectCoins ~= nil or savedBlock ~= nil then
+				elseif farming or savedCollectCoins ~= nil or savedBlock ~= nil or not leftMine then
 					farming = false
 					endFarm()
 					leaveShadowRealm()
+					leftMine = true
 				end
 			end
 		end)
@@ -23290,6 +23435,7 @@ do
 
 							if v3301 and v3284(v3301) then
 								local v3302 = v3116(v3301)
+								local stagnant = 0
 
 								while v14.autoEnchant or v14.autoEnchantOnePet do
 									local v3303 = v3262(v)
@@ -23319,8 +23465,18 @@ do
 													v3191()
 												end
 
+												-- Rerolls that change nothing (no currency, bad
+												-- state) must not spin forever.
+												stagnant += 1
+
+												if stagnant >= 15 then
+													break
+												end
+
 												continue
 											end
+
+											stagnant = 0
 
 											if v14.autoEnchantOnePet and v == v14.selectedEnchantPetId then
 												v3191()
@@ -23797,20 +23953,36 @@ do
 		})
 		task.spawn(function()
 			local RemoteEvent2 = game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Framework"):WaitForChild("Network"):WaitForChild("Remote"):WaitForChild("RemoteEvent")
+			local GlobalIncentiveUtil
+
+			pcall(function()
+				GlobalIncentiveUtil = require(ReplicatedStorage.Shared.Utils.GlobalIncentiveUtil)
+			end)
 
 			while true do
 				if v14.autoClaimGlobalIncentive then
+					local data = LocalData and LocalData:Get()
+					local claimed = data and data.GlobalIncentive and data.GlobalIncentive.ClaimedIncentives or {}
+					local progress = tonumber(workspace:GetAttribute("GlobalIncentive")) or 0
+					local rewards = GlobalIncentiveUtil and GlobalIncentiveUtil.IncentiveRewards
+
 					pcall(function()
 						RemoteEvent2:FireServer("ClaimGlobalIncentiveQuest")
 					end)
-					pcall(function()
-						for i = 1, 10 do
-							RemoteEvent2:FireServer("ClaimGlobalIncentive", i)
+
+					if type(rewards) == "table" then
+						for i, reward in ipairs(rewards) do
+							if not claimed[tostring(i)] and progress >= (tonumber(reward.Requirement) or 0) then
+								pcall(function()
+									RemoteEvent2:FireServer("ClaimGlobalIncentive", i)
+								end)
+								task.wait(0.2)
+							end
 						end
-					end)
+					end
 				end
 
-				task.wait(1)
+				task.wait(5)
 			end
 		end)
 		v38:AddToggle("AutoGuildRewards", {
@@ -29785,18 +29957,6 @@ do
 
 			local v4257 = v4219(selectedRiftEgg2)
 			local v4258 = v4252(v4257) or v4257
-
-			if v4257:lower():find("moon") then
-				pcall(function()
-					RemoteFunction:InvokeServer("SummonMoonRift", {
-						Type = "Egg",
-						Time = 5,
-						Luck = 5
-					})
-				end)
-
-				return
-			end
 
 			local s50
 
